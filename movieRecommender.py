@@ -9,20 +9,24 @@ from fuzzywuzzy import process
 import pandas as pd
 import random
 from joblib import load
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.preprocessing import MultiLabelBinarizer
+from scipy.sparse import hstack
+
 
 
 app = Flask(__name__)
 
-# Loading datasets
-movies = pd.read_csv('./movies.csv')
-ratings = pd.read_csv('./ratings.csv')
-tags = pd.read_csv('./tags.csv')
+# # Loading datasets
+# movies = pd.read_csv('./movies.csv')
+# ratings = pd.read_csv('./ratings.csv')
+# tags = pd.read_csv('./tags.csv')
 
-# Setting 'movieId' as the index for the movies DataFrame
-movies.set_index('movieId', inplace=True)
+# # Setting 'movieId' as the index for the movies DataFrame
+# movies.set_index('movieId', inplace=True)
 
-# Preprocess movies data
-movies['genres'] = movies['genres'].apply(lambda x: x.split('|') if isinstance(x, str) else [])
+# # Preprocess movies data
+# movies['genres'] = movies['genres'].apply(lambda x: x.split('|') if isinstance(x, str) else [])
 
 # # Binarizing genres
 # mlb = MultiLabelBinarizer(sparse_output=True)  # Enable sparse_output to reduce memory usage
@@ -46,7 +50,20 @@ movies['genres'] = movies['genres'].apply(lambda x: x.split('|') if isinstance(x
 
 # # Save the model to a file
 # dump(model, 'nearest_neighbors_model.joblib')
+# Load the pre-trained model and transformers
 model = load('./nearest_neighbors_model.joblib')
+mlb = load('./mlb_transformer.joblib')
+vectorizer = load('./vectorizer_transformer.joblib')
+
+# Load your datasets
+movies = pd.read_csv('./movies.csv')
+ratings = pd.read_csv('./ratings.csv')
+tags = pd.read_csv('./tags.csv')
+
+# Setting 'movieId' as the index for the movies DataFrame
+movies.set_index('movieId', inplace=True)
+
+
 
 
 @app.route('/')
@@ -73,29 +90,86 @@ if __name__ == '__main__':
 
 
 # Function to find closest movie title
+# def find_closest_title(title):
+#     all_titles = movies['title'].tolist()
+#     closest_title = process.extractOne(title, all_titles)[0]
+#     return closest_title
+
+# # Function to recommend movies based on favorite
+# def recommend_movies(input_title):
+#     movie_title = find_closest_title(input_title)
+#     movie_idx = movies.index[movies['title'] == movie_title].tolist()
+    
+#     if not movie_idx:
+#         return "Movie not found."
+#     movie_idx = movie_idx[0]
+#     chosen_movie = {
+#         "title": movies.iloc[movie_idx]['title'],
+#         "genre": ", ".join(movies.iloc[movie_idx]['genres'])
+#     }
+
+#     # Ensure the input for the model has the same feature names as during fitting
+#     input_features = genres_df.iloc[[movie_idx]]  # Make it a dataframe with the same structure
+#     distances, indices = model.kneighbors(input_features)
+#     recommended_movie_indices = indices[0][1:]  # Exclude the input movie itself
+
+#     recommended_movies = []
+#     for idx in recommended_movie_indices:
+#         movie_info = movies.iloc[idx]
+#         recommended_movies.append({
+#             "title": movie_info['title'],
+#             "genre": ", ".join(movie_info['genres'])
+#         })
+
+#     return {"chosenMovie": chosen_movie, "recommendations": recommended_movies}
+
+
+# # Function to recommend random fan favorites (5-star ratings)
+# def recommend_fan_favorites():
+#     high_rated = ratings[ratings['rating'] == 5.0]
+#     top_movies = high_rated['MovieId'].unique()
+#     random_top_movies = random.sample(list(top_movies), 5)
+#     fan_favorites = []
+#     for movie_id in random_top_movies:
+#         movie_info = movies.loc[movie_id]
+#         fan_favorites.append({
+#             "title": movie_info['title'],
+#             "genre": movie_info['genres']
+#         })
+#     return fan_favorites
+# Load the model
+
+
 def find_closest_title(title):
     all_titles = movies['title'].tolist()
     closest_title = process.extractOne(title, all_titles)[0]
     return closest_title
 
-# Function to recommend movies based on favorite
+
+def transform_to_model_input(movie_idx):
+    genres = movies.iloc[movie_idx]['genres'].split('|')  # Split genres into a list
+    movie_id = movies.index[movie_idx]
+    tag_string = ' '.join(tags[tags['movieId'] == movie_id]['tag'].fillna(''))
+
+    genres_transformed = mlb.transform([genres])
+    tags_transformed = vectorizer.transform([tag_string])
+
+    combined_features = hstack([genres_transformed, tags_transformed])
+    return combined_features
+
 def recommend_movies(input_title):
     movie_title = find_closest_title(input_title)
     movie_idx = movies.index[movies['title'] == movie_title].tolist()
-    
+
     if not movie_idx:
         return "Movie not found."
     movie_idx = movie_idx[0]
-    chosen_movie = {
-        "title": movies.iloc[movie_idx]['title'],
-        "genre": ", ".join(movies.iloc[movie_idx]['genres'])
-    }
 
-    # Ensure the input for the model has the same feature names as during fitting
-    input_features = genres_df.iloc[[movie_idx]]  # Make it a dataframe with the same structure
+    # Transform input for model prediction
+    input_features = transform_to_model_input(movie_idx)
     distances, indices = model.kneighbors(input_features)
-    recommended_movie_indices = indices[0][1:]  # Exclude the input movie itself
 
+    recommended_movie_indices = indices[0][1:]  # Exclude the input movie itself
     recommended_movies = []
     for idx in recommended_movie_indices:
         movie_info = movies.iloc[idx]
@@ -104,21 +178,25 @@ def recommend_movies(input_title):
             "genre": ", ".join(movie_info['genres'])
         })
 
+    chosen_movie = {
+        "title": movies.iloc[movie_idx]['title'],
+        "genre": ", ".join(movies.iloc[movie_idx]['genres'])
+    }
     return {"chosenMovie": chosen_movie, "recommendations": recommended_movies}
 
-
-# Function to recommend random fan favorites (5-star ratings)
 def recommend_fan_favorites():
     high_rated = ratings[ratings['rating'] == 5.0]
-    top_movies = high_rated['MovieId'].unique()
+    top_movies = high_rated['movieId'].unique()
     random_top_movies = random.sample(list(top_movies), 5)
+
     fan_favorites = []
     for movie_id in random_top_movies:
-        movie_info = movies.loc[movie_id]
-        fan_favorites.append({
-            "title": movie_info['title'],
-            "genre": movie_info['genres']
-        })
+        if movie_id in movies.index:
+            movie_info = movies.loc[movie_id]
+            fan_favorites.append({
+                "title": movie_info['title'],
+                "genre": ", ".join(movie_info['genres'])
+            })
     return fan_favorites
 
 

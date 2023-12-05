@@ -15,4 +15,3 @@ set FLASK_ENV=development
 $env:FLASK_APP = "movieRecommender.py"
 When you want to start up the server for testing 
 flask run
-
